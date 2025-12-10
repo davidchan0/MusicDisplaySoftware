@@ -1,5 +1,3 @@
-
-
 #include <Arduino.h>
 #include "driver/i2s.h"
 #include <arduinoFFT.h>
@@ -17,8 +15,8 @@
 
 
 
-const char* WIFI_SSID = "";      
-const char* WIFI_PASS = "";      
+const char* WIFI_SSID = "WhiteSky-InspireAtlanta";      
+const char* WIFI_PASS = "r69kqxfw";      
 const char* ACR_HOST = ""; 
 const char* ACR_ACCESS_KEY = "";       
 const char* ACR_ACCESS_SECRET = ""; 
@@ -36,19 +34,19 @@ const char* OPENAI_API_KEY = "";
 
 constexpr uint8_t NUM_STRIPS = 10;        
 
-const uint8_t LED_PIN_A = 1;             
+const uint8_t LED_PIN_A = 2;             
 constexpr uint16_t TOTAL_LEDS_PIN_A = 60; 
 
-const uint8_t LED_PIN_B = 2;             
+const uint8_t LED_PIN_B = 1;             
 constexpr uint16_t TOTAL_LEDS_PIN_B = 60; 
 
 
-const uint8_t BTN_NORMAL = 3;   
-const uint8_t BTN_BEAT   = 4;   
-const uint8_t BTN_NOTES  = 5;   
-const uint8_t BTN_ROLL   = 6;   
-const uint8_t BTN_AI     = 7;   
-const uint8_t BTN_COLOR  = 11;  
+const uint8_t BTN_NORMAL  = 3;   
+const uint8_t BTN_BEAT    = 4;   
+const uint8_t BTN_EMOTION = 5;   // Changed from BTN_NOTES
+const uint8_t BTN_ROLL    = 6;   
+const uint8_t BTN_AI      = 7;   
+const uint8_t BTN_COLOR   = 11;  
 
 
 const uint8_t SPEAKER_PIN = 10; 
@@ -100,27 +98,22 @@ const uint8_t PALETTES = 5;
 const char* PALETTE_NAMES[PALETTES] = { "Default", "Warm", "Cool", "Forest", "Neon" };
 
 const uint8_t PALETTE_DATA[PALETTES][NUM_STRIPS][3] = {
-  
   {
     { 0, 200, 40 }, { 0,120,200 }, {0,80,255}, {80,200,255}, {255,160,0},
     {255,100,0}, {200,40,0}, {180,0,120}, {160,0,200}, {255,200,80}
   },
-  
   {
     {255, 120, 10}, {255,80,10}, {255,60,0}, {230,100,10}, {200,120,10},
     {180,60,0}, {160,40,0}, {140,30,10}, {200,50,0}, {255,180,60}
   },
-  
   {
     {0,180,160}, {0,120,200}, {0,80,255}, {40,120,255}, {80,200,255},
     {0,150,200}, {0,90,200}, {30,60,200}, {60,40,200}, {100,160,255}
   },
-  
   {
     {0,180,80}, {0,140,60}, {20,120,40}, {40,100,30}, {80,160,40},
     {120,180,60}, {140,120,30}, {100,90,20}, {80,110,40}, {160,200,120}
   },
-  
   {
     {255,0,120}, {0,255,200}, {120,0,255}, {255,80,0}, {255,200,0},
     {0,255,80}, {255,0,200}, {200,0,255}, {0,180,255}, {255,120,0}
@@ -158,19 +151,24 @@ Adafruit_NeoPixel* strips[2];
 static int32_t i2s_buffer[SAMPLES];
 
 
-enum Mode { IDLE=0, NORMAL=1, BEAT=2, NOTES=3, ROLL=4 };
+enum Mode { IDLE=0, NORMAL=1, BEAT=2, EMOTION=3, ROLL=4 };
 volatile Mode activeMode = IDLE;
+
+
+// Emotion types
+enum EmotionType { EMOTION_NONE=0, EMOTION_LOVE=1, EMOTION_HAPPY=2, EMOTION_SAD=3, EMOTION_ANGRY=4 };
+EmotionType currentEmotion = EMOTION_NONE;
 
 
 bool showStatsOnMain = false;
 
 
 const unsigned long DEBOUNCE_MS = 50;
-int lastReadingNormal = HIGH, lastReadingBeat = HIGH, lastReadingNotes = HIGH, lastReadingRoll = HIGH, lastReadingAI = HIGH, lastReadingColor = HIGH;
-unsigned long lastDebounceNormal = 0, lastDebounceBeat = 0, lastDebounceNotes = 0, lastDebounceRoll = 0, lastDebounceAI = 0, lastDebounceColor = 0;
+int lastReadingNormal = HIGH, lastReadingBeat = HIGH, lastReadingEmotion = HIGH, lastReadingRoll = HIGH, lastReadingAI = HIGH, lastReadingColor = HIGH;
+unsigned long lastDebounceNormal = 0, lastDebounceBeat = 0, lastDebounceEmotion = 0, lastDebounceRoll = 0, lastDebounceAI = 0, lastDebounceColor = 0;
 int stableNormal = HIGH;
 int stableBeat   = HIGH;
-int stableNotes  = HIGH;
+int stableEmotion  = HIGH;
 int stableRoll   = HIGH;
 int stableAI     = HIGH;
 int stableColor  = HIGH;
@@ -217,6 +215,7 @@ String acrTitle = "";
 String acrArtist = "";
 String acrCombined = "";
 String acrTheme = "";
+String acrEmotion = ""; // NEW: stores detected emotion
 unsigned long auxRotateMillis = 0;
 int auxRotateIndex = 0;
 const unsigned long AUX_ROTATE_INTERVAL_MS_LOCAL = AUX_ROTATE_INTERVAL_MS; 
@@ -256,17 +255,17 @@ void exitModeCleanup(Mode m);
 void switchMode(Mode newMode);
 void initNormal();
 void initBeat();
-void initNotes();
+void initEmotion();
 void initRoll();
 void handleButtons();
 void runNormalTick();
 void runBeatTick();
-void runNotesTick();
+void runEmotionTick();
 void runRollTick();
 void playWelcomeMelody();
 String acrIdentifyFromFile(const char* wavPath);
 String parseAcrTitleArtist(const String& acrResp);
-String askGroqForOneWord(String prompt);
+String askGroqForEmotion(String prompt); // Changed function
 bool recordAndSaveWav(const char* path);
 
 void updateMainLCDForModeOrStats();
@@ -276,6 +275,11 @@ void applyColorPalette(int idx);
 void clearSection(uint8_t s);
 void writeAuxLineIfChanged(uint8_t row, const String &text);
 
+// Emotion visual effects
+void drawLoveHeart();
+void drawHappyWaves();
+void drawSadRain();
+void drawAngryFire();
 
 
 
@@ -312,10 +316,8 @@ void i2sInitRX() {
 
 
 void computeSectionMapping() {
-  
   const uint8_t sectionsPerChain = NUM_STRIPS / 2; 
 
-  
   uint16_t baseA = TOTAL_LEDS_PIN_A / sectionsPerChain;
   uint16_t remA = TOTAL_LEDS_PIN_A % sectionsPerChain;
   uint16_t idxA = 0;
@@ -325,7 +327,6 @@ void computeSectionMapping() {
     ledsPerSection[virt] = n;
     sectionStartIdx[virt] = idxA;
     sectionChainId[virt] = 0;
-    
     sectionDirection[virt] = (virt % 2 == 0); 
     idxA += n;
   }
@@ -339,7 +340,6 @@ void computeSectionMapping() {
     ledsPerSection[virt] = n;
     sectionStartIdx[virt] = idxB;
     sectionChainId[virt] = 1;
-    
     sectionDirection[virt] = (virt % 2 == 0);
     idxB += n;
   }
@@ -398,10 +398,31 @@ void setSectionPixelScaled(int sectionIdx, uint16_t pixelWithinSection, float fr
 
   uint16_t absoluteIdx;
   if (sectionDirection[sectionIdx]) {
-    
     absoluteIdx = base + relativeIdx;
   } else {
-    
+    absoluteIdx = base + (nLeds - 1 - relativeIdx);
+  }
+
+  if (chain == 0) {
+    if (absoluteIdx < TOTAL_LEDS_PIN_A) stripA.setPixelColor(absoluteIdx, stripA.Color(r,g,b));
+  } else {
+    if (absoluteIdx < TOTAL_LEDS_PIN_B) stripB.setPixelColor(absoluteIdx, stripB.Color(r,g,b));
+  }
+}
+
+// Helper to set any pixel with RGB values directly
+void setPixelDirect(int sectionIdx, uint16_t pixelWithinSection, uint8_t r, uint8_t g, uint8_t b) {
+  uint8_t chain = sectionChainId[sectionIdx];
+  uint16_t base = sectionStartIdx[sectionIdx];
+  uint16_t nLeds = ledsPerSection[sectionIdx];
+
+  uint16_t relativeIdx = pixelWithinSection;
+  if (relativeIdx >= nLeds) return;
+
+  uint16_t absoluteIdx;
+  if (sectionDirection[sectionIdx]) {
+    absoluteIdx = base + relativeIdx;
+  } else {
     absoluteIdx = base + (nLeds - 1 - relativeIdx);
   }
 
@@ -417,11 +438,9 @@ void drawSectionLevelNoShow(int sectionIdx, float norm) {
   norm = constrain(norm, 0.0f, 1.0f);
   uint16_t nLeds = ledsPerSection[sectionIdx];
   uint16_t base = sectionStartIdx[sectionIdx];
-
   uint8_t chain = sectionChainId[sectionIdx];
 
   if (norm < LED_ON_THRESHOLD || nLeds == 0) {
-    
     for (uint16_t i = 0; i < nLeds; ++i) {
       uint16_t absoluteIdx = sectionDirection[sectionIdx] ? (base + i) : (base + (nLeds - 1 - i));
       if (chain == 0) {
@@ -437,8 +456,8 @@ void drawSectionLevelNoShow(int sectionIdx, float norm) {
   uint16_t full = (uint16_t)floor(filled);
   float frac = filled - (float)full;
 
+  // CHANGED: Start from top (nLeds-1) and fill downward
   if (full == 0 && frac > 0.03f) {
-    
     for (uint16_t i = 0; i < nLeds; ++i) {
       uint16_t absoluteIdx = sectionDirection[sectionIdx] ? (base + i) : (base + (nLeds - 1 - i));
       if (chain == 0) {
@@ -447,17 +466,21 @@ void drawSectionLevelNoShow(int sectionIdx, float norm) {
         if (absoluteIdx < TOTAL_LEDS_PIN_B) stripB.setPixelColor(absoluteIdx, 0);
       }
     }
-    setSectionPixelScaled(sectionIdx, 0, frac);
+    // First pixel from top
+    setSectionPixelScaled(sectionIdx, nLeds - 1, frac);
     return;
   }
 
+  // Fill from top down
   for (uint16_t i = 0; i < nLeds; ++i) {
+    uint16_t ledFromTop = nLeds - 1 - i; // Reverse: start from top
+    
     if (i < full) {
-      setSectionPixelScaled(sectionIdx, i, 1.0f);
+      setSectionPixelScaled(sectionIdx, ledFromTop, 1.0f);
     } else if (i == full && frac > 0.001f) {
-      setSectionPixelScaled(sectionIdx, i, frac);
+      setSectionPixelScaled(sectionIdx, ledFromTop, frac);
     } else {
-      uint16_t absoluteIdx = sectionDirection[sectionIdx] ? (base + i) : (base + (nLeds - 1 - i));
+      uint16_t absoluteIdx = sectionDirection[sectionIdx] ? (base + ledFromTop) : (base + (nLeds - 1 - ledFromTop));
       if (chain == 0) {
         if (absoluteIdx < TOTAL_LEDS_PIN_A) stripA.setPixelColor(absoluteIdx, 0);
       } else {
@@ -584,16 +607,11 @@ void initBeat() {
   if (DEBUG) Serial.println("initBeat: done");
 }
 
-void initNotes() {
-  for (int i=0;i<NUM_STRIPS;i++) {
-    levelSmoothed[i] = 0.0f;
-    peakVal[i] = max(ambientNoise[i], 1e-6f);
-  }
-  if (DEBUG) Serial.println("initNotes: done");
+void initEmotion() {
+  if (DEBUG) Serial.println("initEmotion: ready to display emotion visuals");
 }
 
 void initRoll() {
-  
   if (DEBUG) Serial.println("initRoll: calibrating ambient...");
   measureAmbientNoise(12, ambientNoise);
   for (int s=0; s<NUM_STRIPS; ++s) {
@@ -620,7 +638,7 @@ void switchMode(Mode newMode) {
   if (activeMode != IDLE) exitModeCleanup(activeMode);
   if (newMode == NORMAL) { initNormal(); activeMode = NORMAL; Serial.println("-> NORMAL"); lcdMain.clear(); lcdMain.print("Mode: NORMAL"); }
   else if (newMode == BEAT) { initBeat(); activeMode = BEAT; Serial.println("-> BEAT"); lcdMain.clear(); lcdMain.print("Mode: BEAT"); }
-  else if (newMode == NOTES) { initNotes(); activeMode = NOTES; Serial.println("-> NOTES"); lcdMain.clear(); lcdMain.print("Mode: NOTES"); }
+  else if (newMode == EMOTION) { initEmotion(); activeMode = EMOTION; Serial.println("-> EMOTION"); lcdMain.clear(); lcdMain.print("Mode: EMOTION"); }
   else if (newMode == ROLL) { initRoll(); activeMode = ROLL; Serial.println("-> ROLL"); lcdMain.clear(); lcdMain.print("Mode: ROLL"); }
   else { activeMode = IDLE; lcdMain.clear(); lcdMain.print("Mode: IDLE"); }
 }
@@ -632,12 +650,11 @@ void setup() {
 
   pinMode(BTN_NORMAL, INPUT_PULLUP);
   pinMode(BTN_BEAT, INPUT_PULLUP);
-  pinMode(BTN_NOTES, INPUT_PULLUP);
+  pinMode(BTN_EMOTION, INPUT_PULLUP);
   pinMode(BTN_ROLL, INPUT_PULLUP);
   pinMode(BTN_AI, INPUT_PULLUP);
   pinMode(BTN_COLOR, INPUT_PULLUP); 
 
-  
   strips[0] = &stripA;
   strips[1] = &stripB;
 
@@ -647,24 +664,21 @@ void setup() {
   stripA.show();
   stripB.show();
 
-  
   applyColorPalette(0);
 
   for (int i=0;i<NUM_STRIPS;i++){ ambientNoise[i]=1e-3f; peakVal[i]=1e-3f; levelSmoothed[i]=0.0f; rollingAvg[i]=1e-3f; }
   for (int i=0;i<(SAMPLES/2); ++i) prevMagnitudes[i] = 0.0f;
 
-  
   delay(50);
   unsigned long now = millis();
   stableNormal = lastReadingNormal = digitalRead(BTN_NORMAL);
   stableBeat   = lastReadingBeat   = digitalRead(BTN_BEAT);
-  stableNotes  = lastReadingNotes  = digitalRead(BTN_NOTES);
+  stableEmotion  = lastReadingEmotion  = digitalRead(BTN_EMOTION);
   stableRoll   = lastReadingRoll   = digitalRead(BTN_ROLL);
   stableAI     = lastReadingAI     = digitalRead(BTN_AI);
   stableColor  = lastReadingColor  = digitalRead(BTN_COLOR);
-  lastDebounceNormal = lastDebounceBeat = lastDebounceNotes = lastDebounceRoll = lastDebounceAI = lastDebounceColor = now;
+  lastDebounceNormal = lastDebounceBeat = lastDebounceEmotion = lastDebounceRoll = lastDebounceAI = lastDebounceColor = now;
 
-  
   i2sInitRX();
   Serial.println(F("I2S initialized. Calibrating ambient (play background audio)..."));
   measureAmbientNoise(30, ambientNoise);
@@ -673,14 +687,12 @@ void setup() {
     Serial.printf("Ambient[%d]=%.6f\n", i, ambientNoise[i]);
   }
 
-  
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed - check partition scheme");
   } else {
     if (DEBUG) Serial.println("SPIFFS mounted");
   }
 
-  
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   lcdMain.init();
   lcdMain.backlight();
@@ -694,9 +706,7 @@ void setup() {
   auxLastLine0 = "Aux Ready";
   auxLastLine1 = "";
 
-  
   if (strlen(WIFI_SSID) > 0) {
-    
     writeAuxLineIfChanged(0, "Connecting WiFi...");
     Serial.print("Connecting to WiFi ");
     Serial.println(WIFI_SSID);
@@ -711,7 +721,6 @@ void setup() {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("WiFi connected");
       writeAuxLineIfChanged(0, "WiFi OK");
-      
       configTime(0, 0, "pool.ntp.org", "time.google.com");
       Serial.print("Waiting for NTP");
       unsigned long t0 = millis();
@@ -730,21 +739,17 @@ void setup() {
     writeAuxLineIfChanged(0, "No WiFi cfg");
   }
 
-  
   welcomed = false;
   Serial.println("Setup complete - press a mode button to start");
-  
 }
 
 
 void handleButtons() {
-  
   int rN = digitalRead(BTN_NORMAL);
   if (rN != lastReadingNormal) lastDebounceNormal = millis();
   if ((millis() - lastDebounceNormal) > DEBOUNCE_MS) {
     if (rN != stableNormal) {
       if (rN == LOW && stableNormal == HIGH) {
-        
         if (!welcomed) {
           welcomed = true;
           lcdMain.clear(); lcdMain.print("Welcome!");
@@ -759,7 +764,6 @@ void handleButtons() {
   }
   lastReadingNormal = rN;
 
-  
   int rB = digitalRead(BTN_BEAT);
   if (rB != lastReadingBeat) lastDebounceBeat = millis();
   if ((millis() - lastDebounceBeat) > DEBOUNCE_MS) {
@@ -773,39 +777,34 @@ void handleButtons() {
   }
   lastReadingBeat = rB;
 
-  
-  int rNotes = digitalRead(BTN_NOTES);
-  if (rNotes != lastReadingNotes) lastDebounceNotes = millis();
-  if ((millis() - lastDebounceNotes) > DEBOUNCE_MS) {
-    if (rNotes != stableNotes) {
-      if (rNotes == LOW && stableNotes == HIGH) {
+  int rEmotion = digitalRead(BTN_EMOTION);
+  if (rEmotion != lastReadingEmotion) lastDebounceEmotion = millis();
+  if ((millis() - lastDebounceEmotion) > DEBOUNCE_MS) {
+    if (rEmotion != stableEmotion) {
+      if (rEmotion == LOW && stableEmotion == HIGH) {
         if (!welcomed) { welcomed = true; lcdMain.clear(); lcdMain.print("Welcome!"); delay(100); playWelcomeMelody(); }
-        switchMode(NOTES);
+        switchMode(EMOTION);
       }
-      stableNotes = rNotes;
+      stableEmotion = rEmotion;
     }
   }
-  lastReadingNotes = rNotes;
+  lastReadingEmotion = rEmotion;
 
-  
   int rRoll = digitalRead(BTN_ROLL);
   if (rRoll != lastReadingRoll) lastDebounceRoll = millis();
   if ((millis() - lastDebounceRoll) > DEBOUNCE_MS) {
     if (rRoll != stableRoll) {
       if (rRoll == LOW && stableRoll == HIGH) {
-        
         showStatsOnMain = !showStatsOnMain;
         if (showStatsOnMain) {
-          
           lastStatsFlipMillis = millis();
           statsPageIndex = 0;
           lcdMain.clear(); lcdMain.print("Stats view");
           Serial.println("Main LCD: Stats ON");
         } else {
-          
           if (activeMode == NORMAL) lcdMain.clear(), lcdMain.print("Mode: NORMAL");
           else if (activeMode == BEAT) lcdMain.clear(), lcdMain.print("Mode: BEAT");
-          else if (activeMode == NOTES) lcdMain.clear(), lcdMain.print("Mode: NOTES");
+          else if (activeMode == EMOTION) lcdMain.clear(), lcdMain.print("Mode: EMOTION");
           else if (activeMode == IDLE) lcdMain.clear(), lcdMain.print("Mode: IDLE");
           Serial.println("Main LCD: Stats OFF");
         }
@@ -815,20 +814,17 @@ void handleButtons() {
   }
   lastReadingRoll = rRoll;
 
-  
   int rAI = digitalRead(BTN_AI);
   if (rAI != lastReadingAI) lastDebounceAI = millis();
   if ((millis() - lastDebounceAI) > DEBOUNCE_MS) {
     if (rAI != stableAI) {
       if (rAI == LOW && stableAI == HIGH) {
-        
         if (!welcomed) {
           welcomed = true;
           lcdMain.clear(); lcdMain.print("Welcome!");
           delay(100); 
           playWelcomeMelody();
         }
-        
         aiRequested = true;
         Serial.println("AI identify requested");
       }
@@ -837,19 +833,15 @@ void handleButtons() {
   }
   lastReadingAI = rAI;
 
-  
   int rC = digitalRead(BTN_COLOR);
   if (rC != lastReadingColor) lastDebounceColor = millis();
   if ((millis() - lastDebounceColor) > DEBOUNCE_MS) {
     if (rC != stableColor) {
       if (rC == LOW && stableColor == HIGH) {
-        
         int next = (currentPaletteIndex + 1) % PALETTES;
         applyColorPalette(next);
-        
         writeAuxLineIfChanged(0, String("Palette: ") + PALETTE_NAMES[next]);
         writeAuxLineIfChanged(1, String("Press to cycle"));
-        
         auxRotateMillis = millis();
         if (DEBUG) Serial.printf("Palette button -> %d (%s)\n", next, PALETTE_NAMES[next]);
       }
@@ -914,10 +906,6 @@ void runNormalTick() {
     drawSectionLevelNoShow(s, levelSmoothed[s]);
 
     avgVisualLevel += levelSmoothed[s];
-
-    
-    
-    
   }
 
   avgVisualLevel /= (float)NUM_STRIPS;
@@ -925,7 +913,6 @@ void runNormalTick() {
 
   stripA.show();
   stripB.show();
-  
 }
 
 
@@ -986,21 +973,10 @@ void runBeatTick() {
     else levelSmoothed[s] = DECAY_ALPHA * level + (1.0f - DECAY_ALPHA) * levelSmoothed[s];
 
     avgVisualLevel += levelSmoothed[s];
-
-    if (DEBUG) {
-      Serial.print("S"); Serial.print(s);
-      Serial.print(" BE="); Serial.print(bandEnergies[s], 6);
-      Serial.print(" amb="); Serial.print(ambientNoise[s],6);
-      Serial.print(" peak="); Serial.print(peakVal[s],6);
-      Serial.print(" lvl="); Serial.print(level,3);
-      Serial.print(" sm="); Serial.print(levelSmoothed[s],3);
-      Serial.print(" | ");
-    }
   }
   avgVisualLevel /= (float)NUM_STRIPS;
   lastAvgVisualLevelGlobal = avgVisualLevel;
 
-  
   double flux = 0.0; int fluxBins = 0;
   for (int b = 1; b < maxBin; ++b) {
     float diff = vReal[b] - prevMagnitudes[b];
@@ -1025,21 +1001,12 @@ void runBeatTick() {
     lastBeatMillis = now;
     beatExpireMillis = now + BEAT_HOLD_MS;
     lastDetectedBeatStrength = beatStrength;
-    if (DEBUG) {
-      Serial.print("BEAT! fluxVal="); Serial.print(fluxVal,6);
-      Serial.print(" fluxMean="); Serial.print(fluxMean,6);
-      Serial.print(" rmsNorm="); Serial.print(rmsNorm,6);
-      Serial.print(" rmsMean="); Serial.print(rmsMean,6);
-      Serial.print(" strength="); Serial.print(beatStrength,3);
-      Serial.print(" | ");
-    }
   }
 
   bool microBeatActive = ENABLE_MICRO_BEATS && !beatDetected &&
                          (rmsNorm > max(1e-9f, rmsMean * MICRO_BEAT_TRIGGER) ||
                           fluxVal > max(1e-9f, fluxMean * MICRO_BEAT_TRIGGER));
 
-  
   if (now < beatExpireMillis) {
     float strengthBoost = constrain(1.0f + (lastDetectedBeatStrength - 1.0f) * 1.4f, 1.0f, 3.0f);
     float savedPeaks[NUM_STRIPS];
@@ -1056,112 +1023,231 @@ void runBeatTick() {
 
   stripA.show();
   stripB.show();
-  if (DEBUG) Serial.println(" BEAT: tick");
 
-  
   unsigned long loopDur = millis() - loopStart;
   if (loopDur < 10) delay(10 - loopDur);
 }
 
 
-void runNotesTick() {
-  takeSamplesI2S();
-  FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-  FFT.compute(FFT_FORWARD);
-  FFT.complexToMagnitude();
+// ========== EMOTION VISUAL EFFECTS ==========
 
-  const int maxBin = SAMPLES / 2;
-  const float freqStep = (float)I2S_SAMPLE_RATE / (float)SAMPLES;
-
-  float avgVisualLevel = 0.0f;
-  float rms = 0.0f;
-  for (int i=0;i<SAMPLES;i++){ double s=vReal[i]; rms += s*s; }
-  rms = sqrt(rms / (double)SAMPLES);
-  lastRmsGlobal = rms;
-
-  for (int s=0; s<NUM_STRIPS; ++s) {
-    int binLo = max(1, (int)ceil(BAND_DEFS[s].lowHz / freqStep));
-    int binHi = min(maxBin - 1, (int)floor(BAND_DEFS[s].highHz / freqStep));
-    if (binHi < binLo) {
-      
-      clearSection(s);
-      continue;
-    }
-
-    int totalBins = binHi - binLo + 1;
-    int binsPerLetter = max(1, totalBins / (int)LEDS_PER_STRIP);
-
-    
-    clearSection(s);
-
+void drawLoveHeart() {
+  static float pulseTime = 0.0f;
+  pulseTime += 0.08f;
+  
+  // Pulsing brightness
+  float brightness = 0.5f + 0.5f * sin(pulseTime);
+  
+  // Heart shape pattern across 10x12 grid
+  // Define heart shape (1 = lit, 0 = dark)
+  const bool heartPattern[12][10] = {
+    {0,0,0,0,0,0,0,0,0,0}, // row 0 (bottom)
+    {0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,1,0,0,1,0,0,0},
+    {0,0,1,1,1,1,1,1,0,0},
+    {0,0,1,1,1,1,1,1,0,0},
+    {0,0,1,1,1,1,1,1,0,0},
+    {0,0,1,1,1,1,1,1,0,0},
+    {0,0,1,1,1,1,1,1,0,0},
+    {0,0,0,1,1,1,1,0,0,0},
+    {0,0,0,0,1,1,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0}  // row 11 (top)
+  };
+  
+  stripA.clear();
+  stripB.clear();
+  
+  for (int s = 0; s < NUM_STRIPS; s++) {
     uint16_t nLeds = ledsPerSection[s];
-    uint16_t base = sectionStartIdx[s];
-    uint8_t chain = sectionChainId[s];
-
-    for (int letter = 0; letter < LEDS_PER_STRIP; ++letter) {
-      int lBinLo = binLo + letter * binsPerLetter;
-      int lBinHi = min(binHi, lBinLo + binsPerLetter - 1);
-      double sum = 0; int bc=0;
-      for (int b = lBinLo; b <= lBinHi; ++b) { sum += vReal[b]; ++bc; }
-      float energy = (bc>0) ? (float)(sum / (double)SAMPLES / (double)bc) : 0.0f;
-
-      float adjusted = max(energy - ambientNoise[s], 0.0f);
-      float denom = max(peakVal[s] - ambientNoise[s], 1e-6f);
-      float frac = adjusted / denom;
-      frac = pow(constrain(frac, 0.0f, 1.0f), COMPRESS_EXP);
-
-      
-      uint16_t letterIdxWithinSection;
-      if (LEDS_PER_STRIP == 1) letterIdxWithinSection = 0;
-      else {
-        
-        letterIdxWithinSection = (uint16_t)round((float)letter * (float)(nLeds - 1) / (float)(LEDS_PER_STRIP - 1));
-        if (letterIdxWithinSection >= nLeds) letterIdxWithinSection = nLeds - 1;
-      }
-
-      
-      
-      uint16_t logicalIdx;
-      if ((s % 2) == 0) {
-        
-        logicalIdx = (nLeds - 1) - letterIdxWithinSection;
-      } else {
-        
-        logicalIdx = letterIdxWithinSection;
-      }
-      
-      uint16_t absoluteIdx;
-      if (sectionDirection[s]) absoluteIdx = base + logicalIdx;
-      else absoluteIdx = base + (nLeds - 1 - logicalIdx);
-      
-
-      if (frac > 0.02f) {
-        if (chain == 0) { if (absoluteIdx < TOTAL_LEDS_PIN_A) stripA.setPixelColor(absoluteIdx, stripA.Color((uint8_t)(currentColorRGB[s][0]*frac),(uint8_t)(currentColorRGB[s][1]*frac),(uint8_t)(currentColorRGB[s][2]*frac))); }
-        else { if (absoluteIdx < TOTAL_LEDS_PIN_B) stripB.setPixelColor(absoluteIdx, stripB.Color((uint8_t)(currentColorRGB[s][0]*frac),(uint8_t)(currentColorRGB[s][1]*frac),(uint8_t)(currentColorRGB[s][2]*frac))); }
-      } else {
-        if (chain == 0) { if (absoluteIdx < TOTAL_LEDS_PIN_A) stripA.setPixelColor(absoluteIdx, 0); }
-        else { if (absoluteIdx < TOTAL_LEDS_PIN_B) stripB.setPixelColor(absoluteIdx, 0); }
+    for (uint16_t led = 0; led < nLeds; led++) {
+      if (led < 12 && heartPattern[led][s]) {
+        uint8_t red = (uint8_t)(255 * brightness);
+        uint8_t pink = (uint8_t)(100 * brightness);
+        setPixelDirect(s, led, red, pink, pink);
       }
     }
-
-    double bandSum=0; int bc=0;
-    for (int b=binLo;b<=binHi;++b){ bandSum += vReal[b]; ++bc; }
-    float bandEnergy = (bc>0)?(float)(bandSum/(double)SAMPLES/(double)bc):0.0f;
-    const float AMBIENT_ADAPT = 0.995f;
-    ambientNoise[s] = AMBIENT_ADAPT * ambientNoise[s] + (1.0f - AMBIENT_ADAPT) * bandEnergy;
-    if (bandEnergy > peakVal[s]) peakVal[s] = bandEnergy; else peakVal[s] *= PEAK_DECAY;
-    if (peakVal[s] < 1e-6f) peakVal[s] = 1e-6f;
-
-    avgVisualLevel += levelSmoothed[s];
   }
-
-  avgVisualLevel /= (float)NUM_STRIPS;
-  lastAvgVisualLevelGlobal = avgVisualLevel;
-
+  
   stripA.show();
   stripB.show();
-  if (DEBUG) Serial.println(" NOTES: tick");
-  delay(10);
+  delay(50);
+}
+
+void drawHappyWaves() {
+  static float waveTime = 0.0f;
+  waveTime += 0.15f;
+  
+  stripA.clear();
+  stripB.clear();
+  
+  for (int s = 0; s < NUM_STRIPS; s++) {
+    uint16_t nLeds = ledsPerSection[s];
+    float xPos = (float)s / (float)(NUM_STRIPS - 1);
+    
+    for (uint16_t led = 0; led < nLeds; led++) {
+      float yPos = (float)led / (float)(nLeds - 1);
+      
+      // Multiple sine waves for colorful effect
+      float wave = sin(xPos * 6.0f + waveTime) * 0.3f + 
+                   sin(yPos * 4.0f - waveTime * 1.5f) * 0.3f + 0.5f;
+      
+      // Rainbow colors
+      float hue = fmod((xPos + yPos + waveTime * 0.3f) * 360.0f, 360.0f);
+      float h = hue / 60.0f;
+      float sat = 1.0f;
+      float val = wave;
+      
+      float c = val * sat;
+      float x_col = c * (1.0f - fabs(fmod(h, 2.0f) - 1.0f));
+      
+      float r = 0, g = 0, b = 0;
+      if (h < 1) { r = c; g = x_col; }
+      else if (h < 2) { r = x_col; g = c; }
+      else if (h < 3) { g = c; b = x_col; }
+      else if (h < 4) { g = x_col; b = c; }
+      else if (h < 5) { b = c; r = x_col; }
+      else { b = x_col; r = c; }
+      
+      setPixelDirect(s, led, (uint8_t)(r * 255), (uint8_t)(g * 255), (uint8_t)(b * 255));
+    }
+  }
+  
+  stripA.show();
+  stripB.show();
+  delay(50);
+}
+
+void drawSadRain() {
+  static int raindrops[10][3]; // [strip][dropIndex] -> position
+  static int rainSpeed[10][3];
+  static bool initialized = false;
+  
+  if (!initialized) {
+    for (int s = 0; s < 10; s++) {
+      for (int d = 0; d < 3; d++) {
+        raindrops[s][d] = random(0, 12);
+        rainSpeed[s][d] = random(1, 3);
+      }
+    }
+    initialized = true;
+  }
+  
+  stripA.clear();
+  stripB.clear();
+  
+  // Blue raindrop effect
+  for (int s = 0; s < NUM_STRIPS; s++) {
+    uint16_t nLeds = ledsPerSection[s];
+    
+    for (int d = 0; d < 3; d++) {
+      int pos = raindrops[s][d];
+      
+      // Draw raindrop trail
+      for (int trail = 0; trail < 3; trail++) {
+        int ledPos = pos - trail;
+        if (ledPos >= 0 && ledPos < nLeds) {
+          float brightness = 1.0f - (trail * 0.3f);
+          setPixelDirect(s, ledPos, 0, (uint8_t)(50 * brightness), (uint8_t)(255 * brightness));
+        }
+      }
+      
+      // Move raindrop down
+      raindrops[s][d] -= rainSpeed[s][d];
+      if (raindrops[s][d] < -3) {
+        raindrops[s][d] = nLeds + random(0, 5);
+        rainSpeed[s][d] = random(1, 3);
+      }
+    }
+  }
+  
+  stripA.show();
+  stripB.show();
+  delay(80);
+}
+
+void drawAngryFire() {
+  static float fireTime = 0.0f;
+  fireTime += 0.25f; // Slightly faster for more movement
+  
+  stripA.clear();
+  stripB.clear();
+  
+  for (int s = 0; s < NUM_STRIPS; s++) {
+    uint16_t nLeds = ledsPerSection[s];
+    
+    for (uint16_t led = 0; led < nLeds; led++) {
+      // INVERTED: LED 0 is at TOP, LED 11 is at BOTTOM
+      float yPos = 1.0f - ((float)led / (float)(nLeds - 1));
+      float xPos = (float)s / (float)(NUM_STRIPS - 1);
+      
+      // MORE chaotic flicker with multiple frequencies
+      float flicker = sin(xPos * 12.0f + fireTime * 4.0f) * 0.4f +
+                      sin(yPos * 10.0f + fireTime * 3.2f) * 0.3f +
+                      sin((xPos + yPos) * 18.0f + fireTime * 5.0f) * 0.25f +
+                      sin(xPos * 7.0f - fireTime * 2.8f) * 0.2f; // Extra turbulence
+      
+      // Bottom = brightest, Top = dimmer with MORE variation
+      float baseIntensity = (yPos * 0.6f + 0.4f) * (0.6f + flicker * 0.4f);
+      baseIntensity = constrain(baseIntensity, 0.0f, 1.0f);
+      
+      uint8_t red, green, blue;
+      
+      if (yPos > 0.85f) {
+        // Bottom 15%: Orange-yellow core (small hot spot)
+        red = (uint8_t)(255 * baseIntensity);
+        green = (uint8_t)(150 * baseIntensity); // Less yellow, more orange
+        blue = 0;
+      }
+      else if (yPos > 0.65f) {
+        // Lower 20%: Red-orange transition
+        red = (uint8_t)(255 * baseIntensity);
+        green = (uint8_t)(80 * baseIntensity);
+        blue = 0;
+      }
+      else {
+        // Top 65%: MOSTLY RED with flickering
+        red = (uint8_t)(255 * baseIntensity);
+        // Dynamic green based on flicker - creates dancing effect
+        float greenAmount = 30.0f + flicker * 40.0f;
+        greenAmount = constrain(greenAmount, 0.0f, 70.0f);
+        green = (uint8_t)(greenAmount * baseIntensity);
+        blue = 0;
+      }
+      
+      setPixelDirect(s, led, red, green, blue);
+    }
+  }
+  
+  stripA.show();
+  stripB.show();
+  delay(40); // Slightly faster refresh for more fluid movement
+}
+
+void runEmotionTick() {
+  // Display visual based on detected emotion
+  if (currentEmotion == EMOTION_LOVE) {
+    drawLoveHeart();
+  } else if (currentEmotion == EMOTION_HAPPY) {
+    drawHappyWaves();
+  } else if (currentEmotion == EMOTION_SAD) {
+    drawSadRain();
+  } else if (currentEmotion == EMOTION_ANGRY) {
+    drawAngryFire();
+  } else {
+    // No emotion detected yet - show idle pattern
+    static float idleTime = 0.0f;
+    idleTime += 0.05f;
+    stripA.clear();
+    stripB.clear();
+    for (int s = 0; s < NUM_STRIPS; s++) {
+      float brightness = 0.2f + 0.1f * sin(idleTime + s * 0.5f);
+      setPixelDirect(s, 5, (uint8_t)(100 * brightness), (uint8_t)(100 * brightness), (uint8_t)(100 * brightness));
+    }
+    stripA.show();
+    stripB.show();
+    delay(50);
+  }
 }
 
 
@@ -1208,16 +1294,6 @@ void runRollTick() {
     drawSectionLevelNoShow(s, levelSmoothed[s]);
 
     avgVisualLevel += levelSmoothed[s];
-
-    if (DEBUG) {
-      Serial.print("R S"); Serial.print(s);
-      Serial.print(" bandE="); Serial.print(bandEnergy,6);
-      Serial.print(" rollAvg="); Serial.print(rollingAvg[s],6);
-      Serial.print(" amb="); Serial.print(ambientNoise[s],6);
-      Serial.print(" peak="); Serial.print(peakVal[s],6);
-      Serial.print(" lvl="); Serial.print(levelSmoothed[s],3);
-      Serial.print(" | ");
-    }
   }
 
   avgVisualLevel /= (float)NUM_STRIPS;
@@ -1225,7 +1301,6 @@ void runRollTick() {
 
   stripA.show();
   stripB.show();
-  if (DEBUG) Serial.println(" ROLL: tick");
   delay(50);
 }
 
@@ -1395,7 +1470,6 @@ String acrIdentifyFromFile(const char* wavPath) {
   const String data_type = "audio";
   const String signature_version = "1";
 
-  
   time_t ts = time(nullptr);
   if (ts < 1000000000) {
     Serial.println("Time not synced! Waiting for NTP...");
@@ -1408,7 +1482,6 @@ String acrIdentifyFromFile(const char* wavPath) {
   }
   String timestamp = String((long)ts);
 
-  
   String string_to_sign = http_method + "\n" +
                           uri + "\n" +
                           String(ACR_ACCESS_KEY) + "\n" +
@@ -1416,10 +1489,8 @@ String acrIdentifyFromFile(const char* wavPath) {
                           signature_version + "\n" +
                           timestamp;
 
-  
   debugACRSignature(string_to_sign);
 
-  
   String signature = hmacSha1Base64(ACR_ACCESS_SECRET, string_to_sign.c_str());
 
   Serial.println("=== ACR SIGN DEBUG (final) ===");
@@ -1508,25 +1579,25 @@ String acrIdentifyFromFile(const char* wavPath) {
 
 String createGroqPayload(String song) {
   String payload = "{\n";
-  payload += "  \"model\": \"openai/gpt-oss-20b\",\n";
+  payload += "  \"model\": \"llama-3.3-70b-versatile\",\n";
   payload += "  \"messages\": [\n";
   payload += "    {\n";
   payload += "      \"role\": \"system\",\n";
-  payload += "      \"content\": \"You are a helpful assistant that identifies the main theme of songs in exactly one word.\"\n";
+  payload += "      \"content\": \"You are a music emotion classifier. Classify songs into exactly one of these four emotions: LOVE, HAPPY, SAD, or ANGRY. Respond with only the emotion word, nothing else.\"\n";
   payload += "    },\n";
   payload += "    {\n";
   payload += "      \"role\": \"user\",\n";
-  payload += "      \"content\": \"Instruction: Return exactly one single English word that best describes the theme or mood of the following song: \\\"" 
-             + song + "\\\". Output format: a single word only, no punctuation, no quotes.\"\n";
+  payload += "      \"content\": \"Classify the emotion of this song into one word (LOVE, HAPPY, SAD, or ANGRY): \\\"" 
+             + song + "\\\"\"\n";
   payload += "    }\n";
   payload += "  ],\n";
-  payload += "  \"max_tokens\": 1000,\n";
-  payload += "  \"temperature\": 0\n";
+  payload += "  \"max_tokens\": 10,\n";
+  payload += "  \"temperature\": 0.3\n";
   payload += "}";
   return payload;
 }
 
-String askGroqForOneWord(String prompt) {
+String askGroqForEmotion(String prompt) {
     String body = createGroqPayload(prompt);
 
     HTTPClient http;
@@ -1539,14 +1610,14 @@ String askGroqForOneWord(String prompt) {
 
     if (httpResponseCode < 0) {
       Serial.println("Groq HTTP failed");
-      return String("AI fail");
+      return String("NONE");
     }
 
     DynamicJsonDocument doc(16384);
     DeserializationError err = deserializeJson(doc, response);
     if (err) {
       Serial.print("JSON parse failed: "); Serial.println(err.c_str());
-      return String("AI fail");
+      return String("NONE");
     }
     String reply = "";
     if (doc.containsKey("choices") && doc["choices"].size() > 0 &&
@@ -1554,9 +1625,17 @@ String askGroqForOneWord(String prompt) {
         doc["choices"][0]["message"].containsKey("content")) {
       reply = String((const char*)doc["choices"][0]["message"]["content"]);
       reply.trim();
+      reply.toUpperCase();
     }
-    if (reply.length()==0) return String("AI fail");
-    return reply;
+    if (reply.length()==0) return String("NONE");
+    
+    // Parse emotion
+    if (reply.indexOf("LOVE") >= 0) return String("LOVE");
+    if (reply.indexOf("HAPPY") >= 0) return String("HAPPY");
+    if (reply.indexOf("SAD") >= 0) return String("SAD");
+    if (reply.indexOf("ANGRY") >= 0) return String("ANGRY");
+    
+    return String("NONE");
 }
 
 String parseAcrTitleArtist(const String& acrResp) {
@@ -1623,7 +1702,6 @@ void writeAuxLineIfChanged(uint8_t row, const String &text) {
 
 
 void updateMainLCDForModeOrStats() {
-  
   if (showStatsOnMain) {
     unsigned long now = millis();
     if (now - lastStatsFlipMillis > STATS_PAGE_INTERVAL_MS) {
@@ -1636,20 +1714,16 @@ void updateMainLCDForModeOrStats() {
     if (statsPageIndex == 0) {
       float rmsDisplay = lastRmsGlobal;
       float avgL = lastAvgVisualLevelGlobal;
-      
       snprintf(buf1, sizeof(buf1), "RMS:%5.0f AVG:%0.2f", rmsDisplay, avgL);
-      snprintf(buf2, sizeof(buf2), "Mode:%-6s", (activeMode==NORMAL)?"NORMAL":(activeMode==BEAT)?"BEAT":(activeMode==NOTES)?"NOTES":"IDLE");
+      snprintf(buf2, sizeof(buf2), "Mode:%-6s", (activeMode==NORMAL)?"NORMAL":(activeMode==BEAT)?"BEAT":(activeMode==EMOTION)?"EMOTION":"IDLE");
     }
-    
     else if (statsPageIndex == 1) {
       float domHz = lastDominantFreqGlobal;
       float flux = lastFluxGlobal;
       snprintf(buf1, sizeof(buf1), "DomHz:%4.0f", domHz);
       snprintf(buf2, sizeof(buf2), "Flux:%0.3f  ", flux);
     }
-    
     else if (statsPageIndex == 2) {
-      
       int topIdx = 0;
       float topVal = 0.0f;
       for (int i=0;i<NUM_STRIPS;i++){
@@ -1658,11 +1732,9 @@ void updateMainLCDForModeOrStats() {
       snprintf(buf1, sizeof(buf1), "TopBand:%d Peak:%0.2f", topIdx, topVal);
       snprintf(buf2, sizeof(buf2), "AvgVis:%0.2f", lastAvgVisualLevelGlobal);
     }
-    
     else {
-      
-      const char* themeStr = (acrTheme.length() ? acrTheme.c_str() : "(none)");
-      snprintf(buf1, sizeof(buf1), "Theme:%-9s", themeStr);
+      const char* emotionStr = (acrEmotion.length() ? acrEmotion.c_str() : "(none)");
+      snprintf(buf1, sizeof(buf1), "Emotion:%-7s", emotionStr);
       snprintf(buf2, sizeof(buf2), "RMS:%4.0f D:%04.0f", lastRmsGlobal, lastDominantFreqGlobal);
     }
 
@@ -1672,13 +1744,21 @@ void updateMainLCDForModeOrStats() {
     lcdMain.setCursor(0,1);
     lcdMain.print(buf2);
   } else {
-    
     if (!welcomed) {
       lcdMain.clear(); lcdMain.print("Ready");
     } else {
       if (activeMode == NORMAL) { lcdMain.clear(); lcdMain.print("Mode: NORMAL"); }
       else if (activeMode == BEAT) { lcdMain.clear(); lcdMain.print("Mode: BEAT"); }
-      else if (activeMode == NOTES) { lcdMain.clear(); lcdMain.print("Mode: NOTES"); }
+      else if (activeMode == EMOTION) { 
+        lcdMain.clear(); 
+        String emotionText = "EMOTION: ";
+        if (currentEmotion == EMOTION_LOVE) emotionText += "LOVE";
+        else if (currentEmotion == EMOTION_HAPPY) emotionText += "HAPPY";
+        else if (currentEmotion == EMOTION_SAD) emotionText += "SAD";
+        else if (currentEmotion == EMOTION_ANGRY) emotionText += "ANGRY";
+        else emotionText += "...";
+        lcdMain.print(emotionText);
+      }
       else if (activeMode == IDLE) { lcdMain.clear(); lcdMain.print("Mode: IDLE"); }
       else { lcdMain.clear(); lcdMain.print("Mode"); }
     }
@@ -1686,10 +1766,8 @@ void updateMainLCDForModeOrStats() {
 }
 
 void updateAuxLCDPeriodic() {
-  
   unsigned long now = millis();
   if (aiState == AI_IDLE) {
-    
     return;
   } else if (aiState == AI_WIFI) {
     writeAuxLineIfChanged(0, "WiFi reconnect...");
@@ -1713,7 +1791,6 @@ void updateAuxLCDPeriodic() {
     }
     if (auxRotateIndex == 0) {
       String t = acrTitle.length()?acrTitle:"(unknown)";
-      
       if (t.length() > 16) t = t.substring(0,16);
       writeAuxLineIfChanged(0, "Title:");
       writeAuxLineIfChanged(1, t);
@@ -1723,10 +1800,10 @@ void updateAuxLCDPeriodic() {
       writeAuxLineIfChanged(0, "Artist:");
       writeAuxLineIfChanged(1, a);
     } else {
-      String th = acrTheme.length()?acrTheme:"(unknown)";
-      if (th.length() > 16) th = th.substring(0,16);
-      writeAuxLineIfChanged(0, "Theme:");
-      writeAuxLineIfChanged(1, th);
+      String em = acrEmotion.length()?acrEmotion:"(unknown)";
+      if (em.length() > 16) em = em.substring(0,16);
+      writeAuxLineIfChanged(0, "Emotion:");
+      writeAuxLineIfChanged(1, em);
     }
   }
 }
@@ -1734,22 +1811,18 @@ void updateAuxLCDPeriodic() {
 void loop() {
   handleButtons();
 
-  
   static unsigned long lastMainLCDUpdate = 0;
   if (millis() - lastMainLCDUpdate > 500) {
     lastMainLCDUpdate = millis();
     updateMainLCDForModeOrStats();
   }
 
-  
   updateAuxLCDPeriodic();
 
-  
   if (aiRequested && !aiBusy) {
     aiBusy = true;
     aiRequested = false;
 
-    
     if (strlen(WIFI_SSID) > 0 && WiFi.status() != WL_CONNECTED) {
       aiState = AI_WIFI;
       writeAuxLineIfChanged(0, "WiFi reconnect...");
@@ -1760,92 +1833,98 @@ void loop() {
       if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Reconnected WiFi");
         writeAuxLineIfChanged(0, "WiFi OK");
-        
         configTime(0,0,"pool.ntp.org","time.google.com");
         unsigned long t1 = millis();
         while (time(nullptr) < 1600000000 && millis() - t1 < 15000) delay(200);
       } else {
         Serial.println("WiFi reconnect failed");
         writeAuxLineIfChanged(0, "WiFi fail");
-        delay(1200);
-      }
-    }
+delay(1200);
+}
+}
+aiState = AI_RECORDING;
+writeAuxLineIfChanged(0, "Recording...");
+writeAuxLineIfChanged(1, "");
+Serial.println("AI: recording...");
 
-    aiState = AI_RECORDING;
-    writeAuxLineIfChanged(0, "Recording...");
-    writeAuxLineIfChanged(1, "");
-    Serial.println("AI: recording...");
+if (!SPIFFS.begin()) {
+  Serial.println("SPIFFS not mounted (retrying)");
+  SPIFFS.begin(true); 
+}
 
-    
-    if (!SPIFFS.begin()) {
-      Serial.println("SPIFFS not mounted (retrying)");
-      SPIFFS.begin(true); 
-    }
+bool ok = recordAndSaveWav(WAV_PATH);
+if (!ok) {
+  Serial.println("Record fail");
+  writeAuxLineIfChanged(0, "Rec fail");
+  writeAuxLineIfChanged(1, "");
+  delay(2000);
+  aiBusy = false;
+  aiState = AI_FAIL;
+  return;
+}
 
-    bool ok = recordAndSaveWav(WAV_PATH);
-    if (!ok) {
-      Serial.println("Record fail");
-      writeAuxLineIfChanged(0, "Rec fail");
-      writeAuxLineIfChanged(1, "");
-      delay(2000);
-      aiBusy = false;
-      aiState = AI_FAIL;
-      return;
-    }
+aiState = AI_UPLOADING;
+writeAuxLineIfChanged(0, "Uploading...");
+writeAuxLineIfChanged(1, "");
+Serial.println("Uploading to ACRCloud...");
+String acrResp = acrIdentifyFromFile(WAV_PATH);
+String titleArtist = parseAcrTitleArtist(acrResp);
+if (titleArtist.length() == 0) {
+  writeAuxLineIfChanged(0, "No match");
+  writeAuxLineIfChanged(1, "");
+  Serial.println("No match");
+  delay(2000);
+  aiBusy = false;
+  aiState = AI_FAIL;
+  return;
+}
 
-    aiState = AI_UPLOADING;
-    writeAuxLineIfChanged(0, "Uploading...");
-    writeAuxLineIfChanged(1, "");
-    Serial.println("Uploading to ACRCloud...");
-    String acrResp = acrIdentifyFromFile(WAV_PATH);
-    String titleArtist = parseAcrTitleArtist(acrResp);
-    if (titleArtist.length() == 0) {
-      writeAuxLineIfChanged(0, "No match");
-      writeAuxLineIfChanged(1, "");
-      Serial.println("No match");
-      delay(2000);
-      aiBusy = false;
-      aiState = AI_FAIL;
-      return;
-    }
+Serial.println("Identified: " + titleArtist);
 
-    Serial.println("Identified: " + titleArtist);
-    
-    writeAuxLineIfChanged(0, "Asking AI...");
-    writeAuxLineIfChanged(1, "");
-    aiState = AI_PROCESSING;
-    delay(200);
+writeAuxLineIfChanged(0, "Asking AI...");
+writeAuxLineIfChanged(1, "");
+aiState = AI_PROCESSING;
+delay(200);
 
-    String oneWord = askGroqForOneWord(titleArtist);
-    if (oneWord.length() == 0) {
-      Serial.println("AI fail");
-      writeAuxLineIfChanged(0, "AI fail");
-      writeAuxLineIfChanged(1, "");
-      delay(2000);
-      aiBusy = false;
-      aiState = AI_FAIL;
-      return;
-    }
+String emotion = askGroqForEmotion(titleArtist);
+if (emotion.length() == 0 || emotion == "NONE") {
+  Serial.println("AI emotion fail");
+  writeAuxLineIfChanged(0, "AI fail");
+  writeAuxLineIfChanged(1, "");
+  delay(2000);
+  aiBusy = false;
+  aiState = AI_FAIL;
+  return;
+}
 
-    acrTheme = oneWord;
-    Serial.println("AI result: " + oneWord);
-    
-    aiState = AI_RESULT;
-    auxRotateIndex = 0;
-    auxRotateMillis = millis();
-    
-    if (!showStatsOnMain) updateMainLCDForModeOrStats();
-    delay(3000);
-    aiBusy = false;
-  }
+acrEmotion = emotion;
+Serial.println("AI emotion result: " + emotion);
 
-  
-  if (activeMode == NORMAL) runNormalTick();
-  else if (activeMode == BEAT) runBeatTick();
-  else if (activeMode == NOTES) runNotesTick();
-  else if (activeMode == ROLL) runRollTick(); 
-  else {
-    
-    delay(40);
-  }
+// Set the current emotion for display
+if (emotion == "LOVE") currentEmotion = EMOTION_LOVE;
+else if (emotion == "HAPPY") currentEmotion = EMOTION_HAPPY;
+else if (emotion == "SAD") currentEmotion = EMOTION_SAD;
+else if (emotion == "ANGRY") currentEmotion = EMOTION_ANGRY;
+else currentEmotion = EMOTION_NONE;
+
+// If in EMOTION mode, automatically switch to display
+if (activeMode != EMOTION) {
+  switchMode(EMOTION);
+}
+
+aiState = AI_RESULT;
+auxRotateIndex = 0;
+auxRotateMillis = millis();
+
+if (!showStatsOnMain) updateMainLCDForModeOrStats();
+delay(3000);
+aiBusy = false;
+}
+if (activeMode == NORMAL) runNormalTick();
+else if (activeMode == BEAT) runBeatTick();
+else if (activeMode == EMOTION) runEmotionTick();
+else if (activeMode == ROLL) runRollTick();
+else {
+delay(40);
+}
 }
